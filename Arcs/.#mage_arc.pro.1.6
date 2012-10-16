@@ -1,0 +1,150 @@
+pro mage_arc, arcraw, ordr_str=ordr_str, arcimg=arcimg, $
+              INTER=inter, LINLIST=linlist, NOECHO=noecho, $
+              CHK=chk, CLOBBER=clobber, SIGREJ=sigrej, DEBUG=debug,$
+              PINTER=pinter, IPSIG=ipsig, IFSIG=ifsig, outarc=outarc, $
+              GUESSARC=guessarc, SHFTPRM=shftprm, qafil=qafil, TOLER=TOLER
+
+
+;  Optional Keywords
+  if not keyword_set( SIGREJ ) then sigrej = 2.0
+  if not keyword_set( TRCNSIG ) then trcnsig = 3.
+  if not keyword_set( RADIUS ) then radius = 2.0
+ 
+  if not keyword_set( LINLIST ) then $
+     linlist = getenv('XIDL_DIR')+'/Spec/Arcs/Lists/mm_thar.lst' 
+  if not keyword_set( PKWDTH ) then pkwdth = 4L
+  if not keyword_set( NOLOG ) then FLOG = 1 else FLOG = 0
+ 
+  ; Set Peak Width PKWDTH
+  hdr = headfits(arcraw)
+  slit = FLOAT(SXPAR(hdr, 'SLITNAME'))
+  pkwdth=round(slit/1.0d*6L)
+
+ if not keyword_set( TOLER ) then TOLER = FLOOR(PKWDTH/3.)
+
+  ;; PSIG  ;This is copied straight from MIKE red chip.  Maybe fiddle
+  ;; with this to get a better wavelength solution.  Weaker lines
+  ;; correspond  to a smaller number.  Ipsig should be larger than ifsig
+  
+   ipsig = [ [0,40,30], $
+           [40,200,30] ]
+  ifsig = [ [0,45,20], $
+            [45,200,30] ]
+
+  ;ipsig = [ [0,40,10], $
+  ;         [40,200,30] ]
+  ;ifsig = [ [0,45,10], $
+  ;          [45,200,30] ]
+
+; Does the Arc Image already exist?  If so, no need to re-do
+  if (keyword_set(arcimg)) then begin
+     arcimg_fil = arcimg
+  endif else begin
+     file_arr = strsplit(arcraw, "mage", /extract)
+     arcimg_fil = 'Arcs/ArcImg'+strtrim(file_arr[n_elements(file_arr)-1],2)
+     if (x_chkfil(arcimg_fil, /silent) GT 0 AND NOT KEYWORD_SET(CLOBBER)) then begin
+        print, "Wavelength file "+arcimg_fil+" already exists. Skipping..."
+        return
+     endif
+     outarc = arcimg_fil
+  endelse
+
+  IF NOT FILE_TEST('Arcs', /DIR) THEN FILE_MKDIR, 'Arcs'
+  
+ ;All the arc files are processed
+  mage_proc, arcraw, arcframe, arcinvvar
+  
+  mwrfits, arcframe, 'Arcs/Arc'+strtrim(file_arr[n_elements(file_arr)-1],2) $
+           , /create
+  mwrfits, arcinvvar, 'Arcs/Arc'+strtrim(file_arr[n_elements(file_arr)-1],2)
+
+  if not (keyword_set(GUESSARC)) then $
+     guessarc = getenv('MAGE_DIR')+'/Calib/MagE_wvguess2.idl'
+  out_fil = 'tmp.idl' ; This is a temporary location for storing the solution
+
+   ;Archived wavelength image...pixel x,y to log lambda
+  ;;wvarchive = getenv('MAGE_DIR')+'/Calib/wavelength_new.fits'
+
+  ;;wv = xmrdfits(wvarchive, 0, /fscale)
+
+ 
+;what does this section do???
+  ;;guess = fltarr(2048,15)
+  ;;for i=2, 14 do begin
+  ;;   x = findgen(2048)-1
+  ;;   mid_ordr = (ordr_str[i].lhedg[x]+ordr_str[i].rhedg[x])/2.0
+; ;;    mid_ordr[where (mid_ordr LT 0)] = 0
+; ;;    mid_ordr[where (mid_ordr GT 1024)] = 0
+  ;;   guess[x,i] = wv[mid_ordr, x]
+  ;;endfor
+
+  qafil = 'Arcs/Arc1d_qa'+strtrim(file_arr[n_elements(file_arr)-1],2)+'.ps'
+  
+                                ;this fits the arc lines down the
+                                ;center of each order, and uses an
+                                ;archived solution (guessarc) to get
+                                ;in the ballpark.  Returns the answer
+                                ;to tmp.idl (out_fil)
+pinter=0
+  result = m_fitarc( 'Arcs/Arc'+strtrim(file_arr[n_elements(file_arr)-1],2) $
+                     , ordr_str, out_fil, $
+                     INTER=0, LINLIST=linlist,$ 
+                     CHK=chk, CLOBBER=1, IPSIG=ipsig, IFSIG=ifsig, $
+                     PINTER=pinter, DEBUG=debug, SIGREJ=sigrej, $
+                     GUESSARC=guessarc, $
+                     QAFIL=qafil, NOLOG=nolog, SATUR=30000., PKWDTH=PKWDTH $
+                     , TOLER=TOLER, $
+                     FIT_MSK=fit_msk, BCKWD=bckwd, _EXTRA=extra, /FWEIGHT $
+                     , /THIN)
+
+;STOP
+  
+  ;Sigma rejection set by JJB (rather than 10)
+  sigrej=3.0
+  qafil = 'Arcs/Arc2d_qa'+strtrim(file_arr[n_elements(file_arr)-1],2)+'.ps'
+
+
+                                ;note that nycoeff and nocoeff are
+                                ;just going to the defaults here  This
+                                ;step fits the arc lines using the
+                                ;out_fil from the above step
+  rslt = m_fit2darc( "Arcs/Arc"+strtrim(file_arr[n_elements(file_arr)-1],2) $
+                     , ordr_str, out_fil, $
+                     nycoeff=nycoeff, CHKRES=chkres, SIGREJ=sigrej, $
+                     nocoeff=nocoeff, OUT_STR=out_str, $
+                     CLOBBER=clobber, DEBUG=debug, QAFIL=qafil) ;, /yval)
+  mwrfits, out_str, 'Arcs/Arc2d'+strtrim(file_arr[n_elements(file_arr)-1],2)
+  qafil = 'Arcs/Trcarc_qa'+strtrim(file_arr[n_elements(file_arr)-1],2)+'.ps'
+  out_fil = 'Arcs/TraceArc'+strtrim(file_arr[n_elements(file_arr)-1],2)
+
+                                ;Finds all the lines, traces them and
+                                ;that the output is now directed to TraceArc.fits
+  rslt = m_echtrcarc('Arcs/Arc'+strtrim(file_arr[n_elements(file_arr)-1],2) $
+                     , ordr_str, out_fil, $
+                     CLOBBER=clobber, INIO=inio, QAFIL=qafil, $
+                     szccd=[1024L,2048L])
+  
+  arc_fil = 'Arcs/Arc'+strtrim(file_arr[n_elements(file_arr)-1],2)
+  trc_fil = out_fil
+  qafil = 'Arcs/Trcfit_qa'+strtrim(file_arr[n_elements(file_arr)-1],2)+'.ps'
+  out_fil = 'Arcs/Trcfit'+strtrim(file_arr[n_elements(file_arr)-1],2)
+  ordr_fil = 'OStr_new_mage.fits'
+
+
+                                ;Output is now Trcfit.  This routine
+                                ;fits the tilt of the lines, and this
+                                ;information is used to construct a
+                                ;pixel -> wavelength map.
+  rslt = m_fittrcarc(arc_fil, trc_fil, ordr_str, out_fil, qafil, $
+                     CHK=chk, CLOBBER=clobber, $
+                     ORDR_FIL=ordr_fil, _EXTRA=extra) 
+  
+  ;  Final step!
+  
+  fil_fittrc = out_fil
+  
+  rslt = m_mkaimg(arc_fil, ordr_str, 'Arcs/Arc2d'+strtrim(file_arr[n_elements(file_arr)-1],2), fil_fittrc, $
+                  arcimg_fil, CHK=chk, CLOBBER=clobber, $
+                  BAD_ANLY=bad_anly) 
+
+end
